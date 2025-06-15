@@ -1,7 +1,7 @@
 {
   "name": "field-inspector-backend",
-  "version": "1.0.1",
-  "description": "Backend para Field Inspector - App de inspecciones de campo",
+  "version": "1.0.2",
+  "description": "Backend completo para Field Inspector con IA",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,6 +12,7 @@
     "cors": "^2.8.5",
     "multer": "^1.4.5-lts.1",
     "@supabase/supabase-js": "^2.38.4",
+    "openai": "^4.20.1",
     "dotenv": "^16.3.1"
   },
   "engines": {
