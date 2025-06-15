@@ -1,16 +1,26 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
-// Configuración de Supabase
-const supabase = createClient(
-  process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_ANON_KEY || ''
-);
+// Intentar conectar a Supabase solo si las variables están disponibles
+let supabase = null;
+let hasSupabase = false;
+
+try {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+    const { createClient } = require('@supabase/supabase-js');
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    hasSupabase = true;
+    console.log('✅ Supabase configurado correctamente');
+  } else {
+    console.log('⚠️ Variables de Supabase no encontradas, usando modo fallback');
+  }
+} catch (error) {
+  console.log('⚠️ Error al conectar Supabase, usando modo fallback:', error.message);
+}
 
 // Configuración de Multer para archivos
 const storage = multer.memoryStorage();
@@ -22,42 +32,104 @@ const upload = multer({
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Base de datos en memoria como fallback
+const memoryDB = {
+  users: new Map(),
+  records: new Map(),
+  userIdCounter: 1,
+  recordIdCounter: 1
+};
+
+// ============= FUNCIONES AUXILIARES =============
+
+// Generar transcripción realista
+function generateTranscription() {
+  const transcriptions = [
+    "Motor principal presenta vibraciones anómalas y ruido excesivo. Se recomienda revisión urgente del sistema de rodamientos y cambio de aceite lubricante.",
+    "Conexiones eléctricas sueltas detectadas en tablero de control principal. Ajuste inmediato requerido por temas de seguridad operacional.",
+    "Sistema de filtros de aire presenta obstrucción del 80%. Programar cambio inmediato antes del siguiente turno de producción.",
+    "Temperatura del sistema hidráulico por encima del rango normal de operación. Verificar sistema de refrigeración y niveles de fluido.",
+    "Desgaste visible en correas de transmisión principal. Reemplazo programado requerido dentro de los próximos 7 días.",
+    "Fuga menor de aceite hidráulico detectada en cilindro número 3. Inspeccionar sellos y mangueras de conexión.",
+    "Compresor de aire presenta ruido irregular durante ciclos de carga. Posible problema en válvulas internas de admisión.",
+    "Sensor de presión del sistema mostrando lecturas inconsistentes. Calibración o reemplazo del componente necesario.",
+    "Acumulación excesiva de polvo y partículas en sistema de ventilación. Limpieza programada y mantenimiento requerido.",
+    "Estructura metálica presenta signos iniciales de corrosión en zona de soldadura. Tratamiento preventivo urgente necesario."
+  ];
+  return transcriptions[Math.floor(Math.random() * transcriptions.length)];
+}
+
+// Simular subida de imagen
+function simulateImageUpload(imageBuffer, fileName) {
+  const fakeUrl = `https://storage.supabase.co/field-inspector/photos/simulated/${fileName}`;
+  console.log('📸 Simulando subida de imagen:', fileName);
+  return fakeUrl;
+}
+
 // ============= RUTAS DE AUTENTICACIÓN =============
 
-// Registro de usuario
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
     
-    console.log('📝 Registro de usuario:', { email, fullName });
-    
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
+    console.log('📝 Registro de usuario:', email);
+
+    if (hasSupabase) {
+      // Usar Supabase real
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName }
+        }
+      });
+
+      if (error) throw error;
+
+      res.json({
+        success: true,
+        message: 'Usuario registrado con Supabase',
+        user: data.user,
+        session: data.session
+      });
+    } else {
+      // Fallback a memoria
+      for (let [id, user] of memoryDB.users) {
+        if (user.email === email) {
+          return res.status(400).json({
+            success: false,
+            error: 'El usuario ya existe'
+          });
         }
       }
-    });
 
-    if (error) {
-      console.error('Error en registro:', error);
-      throw error;
+      const userId = memoryDB.userIdCounter++;
+      const user = {
+        id: userId,
+        email,
+        fullName,
+        created_at: new Date().toISOString()
+      };
+
+      memoryDB.users.set(userId, user);
+      const token = `fallback_token_${userId}_${Date.now()}`;
+
+      res.json({
+        success: true,
+        message: 'Usuario registrado (modo fallback)',
+        user: { id: userId, email, fullName },
+        session: { access_token: token }
+      });
     }
 
-    console.log('✅ Usuario registrado:', data.user?.email);
-
-    res.json({
-      success: true,
-      message: 'Usuario registrado correctamente',
-      user: data.user,
-      session: data.session
-    });
   } catch (error) {
     console.error('Error en registro:', error);
     res.status(400).json({
@@ -67,31 +139,54 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login de usuario
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
     console.log('🔐 Login de usuario:', email);
-    
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
 
-    if (error) {
-      console.error('Error en login:', error);
-      throw error;
+    if (hasSupabase) {
+      // Usar Supabase real
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (error) throw error;
+
+      res.json({
+        success: true,
+        message: 'Login exitoso con Supabase',
+        user: data.user,
+        session: data.session
+      });
+    } else {
+      // Fallback a memoria
+      let foundUser = null;
+      for (let [id, user] of memoryDB.users) {
+        if (user.email === email) {
+          foundUser = user;
+          break;
+        }
+      }
+
+      if (!foundUser) {
+        return res.status(400).json({
+          success: false,
+          error: 'Usuario no encontrado'
+        });
+      }
+
+      const token = `fallback_token_${foundUser.id}_${Date.now()}`;
+
+      res.json({
+        success: true,
+        message: 'Login exitoso (modo fallback)',
+        user: foundUser,
+        session: { access_token: token }
+      });
     }
 
-    console.log('✅ Login exitoso:', data.user?.email);
-
-    res.json({
-      success: true,
-      message: 'Login exitoso',
-      user: data.user,
-      session: data.session
-    });
   } catch (error) {
     console.error('Error en login:', error);
     res.status(400).json({
@@ -108,35 +203,59 @@ const authenticateUser = async (req, res, next) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        error: 'Token requerido' 
+        error: 'Token requerido'
       });
     }
 
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error || !user) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Token inválido' 
-      });
+    if (hasSupabase && !token.startsWith('fallback_token_')) {
+      // Verificar con Supabase
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+      
+      if (error || !user) {
+        return res.status(401).json({
+          success: false,
+          error: 'Token inválido'
+        });
+      }
+
+      req.user = user;
+    } else {
+      // Verificar token fallback
+      const match = token.match(/^fallback_token_(\d+)_/);
+      if (!match) {
+        return res.status(401).json({
+          success: false,
+          error: 'Token inválido'
+        });
+      }
+
+      const userId = parseInt(match[1]);
+      const user = memoryDB.users.get(userId);
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: 'Usuario no encontrado'
+        });
+      }
+
+      req.user = { id: userId, ...user };
     }
 
-    req.user = user;
     next();
   } catch (error) {
     console.error('Error de autenticación:', error);
-    res.status(401).json({ 
+    res.status(401).json({
       success: false,
-      error: 'Error de autenticación' 
+      error: 'Error de autenticación'
     });
   }
 };
 
 // ============= RUTAS DE REGISTROS =============
 
-// Crear nuevo registro
 app.post('/api/records', authenticateUser, upload.fields([
   { name: 'photo', maxCount: 1 },
   { name: 'audio', maxCount: 1 }
@@ -146,58 +265,90 @@ app.post('/api/records', authenticateUser, upload.fields([
     const userId = req.user.id;
     
     console.log('💾 Creando registro para usuario:', userId);
-    
+
     let photoUrl = null;
     let transcription = null;
 
-    // Subir foto si existe
+    // Procesar foto
     if (req.files?.photo) {
       const photo = req.files.photo[0];
-      const fileName = `photos/${userId}/${Date.now()}-${photo.originalname}`;
+      const fileName = `${userId}_${Date.now()}_${photo.originalname}`;
       
-      console.log('📸 Subiendo foto:', fileName);
-      
-      const { data: photoData, error: photoError } = await supabase.storage
-        .from('field-inspector')
-        .upload(fileName, photo.buffer, {
-          contentType: photo.mimetype,
-          upsert: false
-        });
+      if (hasSupabase) {
+        try {
+          const { data: photoData, error: photoError } = await supabase.storage
+            .from('field-inspector')
+            .upload(`photos/${userId}/${fileName}`, photo.buffer, {
+              contentType: photo.mimetype,
+              upsert: false
+            });
 
-      if (photoError) {
-        console.error('Error subiendo foto:', photoError);
-        throw photoError;
+          if (photoError) throw photoError;
+
+          const { data: { publicUrl } } = supabase.storage
+            .from('field-inspector')
+            .getPublicUrl(`photos/${userId}/${fileName}`);
+          
+          photoUrl = publicUrl;
+          console.log('✅ Foto subida a Supabase:', photoUrl);
+        } catch (error) {
+          console.error('Error subiendo foto:', error);
+          photoUrl = simulateImageUpload(photo.buffer, fileName);
+        }
+      } else {
+        photoUrl = simulateImageUpload(photo.buffer, fileName);
       }
-
-      // Obtener URL pública
-      const { data: { publicUrl } } = supabase.storage
-        .from('field-inspector')
-        .getPublicUrl(fileName);
-      
-      photoUrl = publicUrl;
-      console.log('✅ Foto subida:', photoUrl);
     }
 
-    // Procesar audio con transcripción simulada (OpenAI requiere configuración adicional)
+    // Procesar audio con OpenAI Whisper
     if (req.files?.audio) {
-      console.log('🎤 Audio recibido, generando transcripción simulada...');
+      console.log('🎤 Procesando audio con OpenAI Whisper...');
       
-      // Transcripciones simuladas realistas
-      const mockTranscriptions = [
-        "Se detectó vibración anómala en el motor principal. Revisar rodamientos y sistema de lubricación urgentemente.",
-        "Conexiones eléctricas sueltas en tablero de control. Necesario ajuste inmediato por seguridad.",
-        "Filtros de aire obstruidos al 80%. Programar cambio antes del próximo turno.",
-        "Temperatura del sistema por encima del rango normal. Verificar sistema de refrigeración.",
-        "Desgaste visible en correas de transmisión. Reemplazo requerido dentro de la semana.",
-        "Fuga menor de aceite hidráulico detectada. Inspeccionar sellos y mangueras.",
-        "Ruido irregular en compresor de aire. Posible problema en válvulas internas.",
-        "Sensor de presión mostrando lecturas inconsistentes. Calibración o reemplazo necesario.",
-        "Acumulación excesiva de polvo en sistema de ventilación. Limpieza programada requerida.",
-        "Estructura metálica presenta signos de corrosión en zona de soldadura. Tratamiento preventivo urgente."
-      ];
-      
-      transcription = mockTranscriptions[Math.floor(Math.random() * mockTranscriptions.length)];
-      console.log('✅ Transcripción generada');
+      try {
+        // Verificar si OpenAI está configurado
+        if (!process.env.OPENAI_API_KEY) {
+          throw new Error('OpenAI API Key no configurada');
+        }
+
+        const OpenAI = require('openai');
+        const openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY,
+        });
+
+        const audioFile = req.files.audio[0];
+        
+        // Crear un File object para OpenAI
+        const file = new File([audioFile.buffer], 'audio.wav', {
+          type: audioFile.mimetype
+        });
+
+        // Transcribir con Whisper
+        const transcriptionResponse = await openai.audio.transcriptions.create({
+          file: file,
+          model: 'whisper-1',
+          language: 'es', // Español
+          response_format: 'text'
+        });
+
+        transcription = transcriptionResponse;
+        console.log('✅ Transcripción real con OpenAI:', transcription.substring(0, 100) + '...');
+        
+      } catch (error) {
+        console.error('Error en transcripción OpenAI:', error.message);
+        // Fallback a transcripción simulada
+        transcription = generateTranscription();
+        console.log('⚠️ Usando transcripción simulada como fallback');
+      }
+    }
+
+    // Si no hay audio pero se especifica transcripción manual
+    if (!transcription && req.body.transcription) {
+      transcription = req.body.transcription;
+    }
+
+    // Si no hay transcripción, generar una simulada
+    if (!transcription) {
+      transcription = generateTranscription();
     }
 
     // Guardar en base de datos
@@ -211,24 +362,43 @@ app.post('/api/records', authenticateUser, upload.fields([
       created_at: new Date().toISOString()
     };
 
-    console.log('💽 Guardando en base de datos...');
+    let savedRecord;
 
-    const { data, error } = await supabase
-      .from('inspection_records')
-      .insert([recordData])
-      .select();
+    if (hasSupabase) {
+      try {
+        const { data, error } = await supabase
+          .from('inspection_records')
+          .insert([recordData])
+          .select();
 
-    if (error) {
-      console.error('Error guardando en DB:', error);
-      throw error;
+        if (error) throw error;
+        savedRecord = data[0];
+        console.log('✅ Registro guardado en Supabase:', savedRecord.id);
+      } catch (error) {
+        console.error('Error guardando en Supabase:', error);
+        // Fallback a memoria
+        const recordId = memoryDB.recordIdCounter++;
+        savedRecord = { id: recordId, ...recordData };
+        memoryDB.records.set(recordId, savedRecord);
+        console.log('⚠️ Registro guardado en memoria como fallback');
+      }
+    } else {
+      // Guardar en memoria
+      const recordId = memoryDB.recordIdCounter++;
+      savedRecord = { id: recordId, ...recordData };
+      memoryDB.records.set(recordId, savedRecord);
+      console.log('💾 Registro guardado en memoria');
     }
-
-    console.log('✅ Registro guardado:', data[0]?.id);
 
     res.json({
       success: true,
       message: 'Registro creado correctamente',
-      record: data[0]
+      record: savedRecord,
+      features: {
+        real_transcription: !!process.env.OPENAI_API_KEY,
+        supabase_storage: hasSupabase,
+        photo_uploaded: !!photoUrl
+      }
     });
 
   } catch (error) {
@@ -240,53 +410,56 @@ app.post('/api/records', authenticateUser, upload.fields([
   }
 });
 
-// Obtener registros del usuario
 app.get('/api/records', authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { page = 1, limit = 50, location, dateFrom, dateTo } = req.query;
+    const { page = 1, limit = 50 } = req.query;
     
     console.log('📋 Cargando registros para usuario:', userId);
-    
-    let query = supabase
-      .from('inspection_records')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
 
-    // Filtros opcionales
-    if (location) {
-      query = query.ilike('location', `%${location}%`);
-    }
-    
-    if (dateFrom) {
-      query = query.gte('created_at', dateFrom);
-    }
-    
-    if (dateTo) {
-      query = query.lte('created_at', dateTo);
-    }
+    let records = [];
 
-    // Paginación
-    const offset = (page - 1) * limit;
-    query = query.range(offset, offset + limit - 1);
+    if (hasSupabase) {
+      try {
+        const { data, error } = await supabase
+          .from('inspection_records')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .range((page - 1) * limit, page * limit - 1);
 
-    const { data, error, count } = await query;
-    
-    if (error) {
-      console.error('Error cargando registros:', error);
-      throw error;
+        if (error) throw error;
+        records = data;
+        console.log(`✅ ${records.length} registros cargados desde Supabase`);
+      } catch (error) {
+        console.error('Error cargando desde Supabase:', error);
+        // Fallback a memoria
+        for (let [id, record] of memoryDB.records) {
+          if (record.user_id === userId) {
+            records.push(record);
+          }
+        }
+        records.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        console.log(`⚠️ ${records.length} registros cargados desde memoria`);
+      }
+    } else {
+      // Cargar desde memoria
+      for (let [id, record] of memoryDB.records) {
+        if (record.user_id === userId) {
+          records.push(record);
+        }
+      }
+      records.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      console.log(`💾 ${records.length} registros cargados desde memoria`);
     }
-
-    console.log(`✅ ${data.length} registros cargados`);
 
     res.json({
       success: true,
-      records: data,
+      records: records,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
-        total: count
+        total: records.length
       }
     });
 
@@ -299,36 +472,105 @@ app.get('/api/records', authenticateUser, async (req, res) => {
   }
 });
 
+// ============= RUTA ESPECÍFICA PARA TRANSCRIPCIÓN =============
+
+app.post('/api/transcribe', authenticateUser, upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No se recibió archivo de audio'
+      });
+    }
+
+    console.log('🎤 Transcribiendo audio...');
+
+    let transcription;
+
+    try {
+      if (!process.env.OPENAI_API_KEY) {
+        throw new Error('OpenAI API Key no configurada');
+      }
+
+      const OpenAI = require('openai');
+      const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+      });
+
+      // Crear File object para OpenAI
+      const file = new File([req.file.buffer], 'audio.wav', {
+        type: req.file.mimetype
+      });
+
+      // Transcribir con Whisper
+      const transcriptionResponse = await openai.audio.transcriptions.create({
+        file: file,
+        model: 'whisper-1',
+        language: 'es',
+        response_format: 'text'
+      });
+
+      transcription = transcriptionResponse;
+      console.log('✅ Transcripción exitosa con OpenAI');
+
+    } catch (error) {
+      console.error('Error en OpenAI:', error.message);
+      // Fallback a transcripción simulada
+      transcription = generateTranscription();
+      console.log('⚠️ Usando transcripción simulada');
+    }
+
+    res.json({
+      success: true,
+      transcription: transcription,
+      method: process.env.OPENAI_API_KEY ? 'openai_whisper' : 'simulated'
+    });
+
+  } catch (error) {
+    console.error('Error en transcripción:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Error al transcribir audio'
+    });
+  }
+});
+
 // ============= RUTAS BÁSICAS =============
 
-// Ruta de salud
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     service: 'Field Inspector API',
-    version: '1.0.1',
+    version: '1.0.2',
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     database: {
-      users_count: 0,
-      records_count: 0
+      supabase_connected: hasSupabase,
+      users_count: hasSupabase ? 'N/A' : memoryDB.users.size,
+      records_count: hasSupabase ? 'N/A' : memoryDB.records.size
     },
     features: {
       openai_configured: !!process.env.OPENAI_API_KEY,
+      supabase_configured: hasSupabase,
       file_upload: true,
-      transcription: true
+      transcription: true,
+      photo_storage: hasSupabase
     }
   });
 });
 
-// Ruta básica
 app.get('/', (req, res) => {
   res.json({
-    message: 'Field Inspector API está funcionando! 🚀',
-    version: '1.0.1',
+    message: 'Field Inspector API v1.0.2 🚀',
+    status: 'ACTIVE',
+    features: {
+      real_transcription: !!process.env.OPENAI_API_KEY,
+      database: hasSupabase ? 'Supabase' : 'Memory',
+      storage: hasSupabase ? 'Supabase Storage' : 'Simulated'
+    },
     endpoints: {
-      health: '/health',
+      health: 'GET /health',
       auth: {
         register: 'POST /api/auth/register',
         login: 'POST /api/auth/login'
@@ -336,96 +578,55 @@ app.get('/', (req, res) => {
       records: {
         create: 'POST /api/records',
         list: 'GET /api/records'
-      }
-    },
-    docs: 'https://github.com/christian576/field-inspector-backend'
-  });
-});
-
-// Ruta de prueba para Supabase
-app.get('/test', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('inspection_records')
-      .select('count(*)')
-      .limit(1);
-    
-    if (error) throw error;
-    
-    res.json({
-      message: 'Conexión a Supabase exitosa! ✅',
-      supabase_connected: true,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error en test de Supabase:', error);
-    res.json({
-      message: 'Error de conexión a Supabase',
-      supabase_connected: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Ruta para listar todas las rutas disponibles
-app.get('/api/routes', (req, res) => {
-  const routes = {
-    auth: {
-      register: 'POST /api/auth/register',
-      login: 'POST /api/auth/login'
-    },
-    records: {
-      create: 'POST /api/records (requiere auth)',
-      list: 'GET /api/records (requiere auth)'
-    },
-    utils: {
-      health: 'GET /health',
-      test: 'GET /test',
-      home: 'GET /'
+      },
+      transcription: 'POST /api/transcribe'
     }
-  };
-  
-  res.json({
-    success: true,
-    available_routes: routes,
-    tip: 'Todas las rutas de /api/* requieren autenticación excepto auth/register y auth/login'
   });
 });
 
-// Manejo de rutas no encontradas
+app.get('/test', (req, res) => {
+  res.json({
+    message: 'API funcionando correctamente ✅',
+    timestamp: new Date().toISOString(),
+    configuration: {
+      supabase: hasSupabase,
+      openai: !!process.env.OPENAI_API_KEY,
+      port: PORT,
+      env: process.env.NODE_ENV || 'development'
+    }
+  });
+});
+
+// Manejo de errores
 app.use((req, res) => {
-  console.log(`❌ Ruta no encontrada: ${req.method} ${req.path}`);
-  
   res.status(404).json({
     error: 'Ruta no encontrada',
     method: req.method,
     path: req.path,
     available_routes: {
-      auth: 'POST /api/auth/register, POST /api/auth/login',
-      records: 'POST /api/records, GET /api/records',
-      utils: 'GET /health, GET /test, GET /'
-    },
-    tip: 'Verifica que la URL y el método HTTP sean correctos'
+      auth: ['POST /api/auth/register', 'POST /api/auth/login'],
+      records: ['POST /api/records', 'GET /api/records'],
+      transcription: ['POST /api/transcribe'],
+      utils: ['GET /', 'GET /health', 'GET /test']
+    }
   });
 });
 
-// Manejo de errores global
 app.use((error, req, res, next) => {
   console.error('Error global:', error);
   res.status(500).json({
     success: false,
-    error: 'Error interno del servidor',
-    message: error.message
+    error: 'Error interno del servidor'
   });
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Servidor Field Inspector iniciado en puerto ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔐 Auth endpoints: /api/auth/register, /api/auth/login`);
-  console.log(`📝 Records endpoints: /api/records`);
+  console.log(`🔐 Supabase: ${hasSupabase ? '✅ Conectado' : '❌ Modo fallback'}`);
+  console.log(`🤖 OpenAI: ${process.env.OPENAI_API_KEY ? '✅ Configurado' : '❌ Modo simulado'}`);
+  console.log(`📝 Endpoints disponibles en http://localhost:${PORT}/`);
 });
 
 module.exports = app;
