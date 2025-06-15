@@ -317,16 +317,20 @@ app.post('/api/records', authenticateUser, upload.fields([
 
         const audioFile = req.files.audio[0];
         
-        // Crear un File object para OpenAI
-        const file = new File([audioFile.buffer], 'audio.wav', {
-          type: audioFile.mimetype
-        });
+        // OpenAI acepta directamente el buffer con nombre
+        const audioForWhisper = {
+          buffer: audioFile.buffer,
+          originalname: 'audio.wav',
+          mimetype: audioFile.mimetype || 'audio/wav'
+        };
 
         // Transcribir con Whisper
-        const transcriptionResponse = await openai.audio.transcriptions.create({
-          file: file,
+         const transcriptionResponse = await openai.audio.transcriptions.create({
+          file: new File([audioForWhisper.buffer], audioForWhisper.originalname, {
+            type: audioForWhisper.mimetype
+          }),
           model: 'whisper-1',
-          language: 'es', // Español
+          language: 'es',
           response_format: 'text'
         });
 
