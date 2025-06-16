@@ -5,21 +5,54 @@ const multer = require('multer');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Reemplaza las líneas 8-24 de tu server.js con esto:
+
 // Intentar conectar a Supabase solo si las variables están disponibles
 let supabase = null;
 let hasSupabase = false;
 
 try {
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+  // Priorizar Service Key sobre Anon Key
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+    const { createClient } = require('@supabase/supabase-js');
+    
+    // Usar service key para todas las operaciones del servidor
+    supabase = createClient(
+      process.env.SUPABASE_URL, 
+      process.env.SUPABASE_SERVICE_KEY,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+          detectSessionInUrl: false
+        }
+      }
+    );
+    
+    hasSupabase = true;
+    console.log('✅ Supabase configurado con Service Role Key');
+    
+    // Test rápido de conexión
+    supabase.storage.listBuckets()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('❌ Error conectando Storage:', error);
+        } else {
+          console.log('✅ Storage conectado. Buckets:', data?.map(b => b.name) || []);
+        }
+      })
+      .catch(err => console.error('❌ Error en test de Storage:', err));
+    
+  } else if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
     const { createClient } = require('@supabase/supabase-js');
     supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
     hasSupabase = true;
-    console.log('✅ Supabase configurado correctamente');
+    console.log('✅ Supabase configurado con Anon Key (limitado)');
   } else {
     console.log('⚠️ Variables de Supabase no encontradas, usando modo fallback');
   }
 } catch (error) {
-  console.log('⚠️ Error al conectar Supabase, usando modo fallback:', error.message);
+  console.log('⚠️ Error al conectar Supabase:', error.message);
 }
 
 // Configuración de Multer para archivos
