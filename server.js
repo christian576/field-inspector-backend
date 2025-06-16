@@ -5,16 +5,42 @@ const multer = require('multer');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Intentar conectar a Supabase solo si las variables están disponibles
 let supabase = null;
 let hasSupabase = false;
 
 try {
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+    const { createClient } = require('@supabase/supabase-js');
+    
+    // Usar service key para operaciones del servidor
+    supabase = createClient(
+      process.env.SUPABASE_URL, 
+      process.env.SUPABASE_SERVICE_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        }
+      }
+    );
+    
+    hasSupabase = true;
+    console.log('✅ Supabase configurado con Service Key');
+    
+    // Test de conexión
+    const { data: buckets, error } = await supabase.storage.listBuckets();
+    if (error) {
+      console.error('❌ Error conectando Storage:', error);
+    } else {
+      console.log('✅ Buckets disponibles:', buckets?.map(b => b.name));
+    }
+    
+  } else if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+    // Fallback a anon key si no hay service key
     const { createClient } = require('@supabase/supabase-js');
     supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
     hasSupabase = true;
-    console.log('✅ Supabase configurado correctamente');
+    console.log('✅ Supabase configurado con Anon Key');
   } else {
     console.log('⚠️ Variables de Supabase no encontradas, usando modo fallback');
   }
@@ -270,35 +296,66 @@ app.post('/api/records', authenticateUser, upload.fields([
     let transcription = null;
 
     // Procesar foto
-    if (req.files?.photo) {
-      const photo = req.files.photo[0];
-      const fileName = `${userId}_${Date.now()}_${photo.originalname}`;
-      
-      if (hasSupabase) {
-        try {
-          const { data: photoData, error: photoError } = await supabase.storage
-            .from('field-inspector')
-            .upload(`photos/${userId}/${fileName}`, photo.buffer, {
-              contentType: photo.mimetype,
-              upsert: false
-            });
+if (req.files?.photo) {
+  const photo = req.files.photo[0];
+  // Simplificar el nombre del archivo
+  const timestamp = Date.now();
+  const safeFileName = photo.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const fileName = `${userId}_${timestamp}_${safeFileName}`;
+  
+  if (hasSupabase) {
+    try {
+      console.log('📸 Subiendo foto:', {
+        fileName,
+        size: photo.buffer.length,
+        mimetype: photo.mimetype,
+        path: `photos/${fileName}` // Path más simple sin subcarpetas
+      });
 
-          if (photoError) throw photoError;
+      // Subir directamente a la carpeta photos
+      const { data: photoData, error: photoError } = await supabase.storage
+        .from('field-inspector')
+        .upload(`photos/${fileName}`, photo.buffer, {
+          contentType: photo.mimetype,
+          cacheControl: '3600',
+          upsert: false
+        });
 
-          const { data: { publicUrl } } = supabase.storage
-            .from('field-inspector')
-            .getPublicUrl(`photos/${userId}/${fileName}`);
-          
-          photoUrl = publicUrl;
-          console.log('✅ Foto subida a Supabase:', photoUrl);
-        } catch (error) {
-          console.error('Error subiendo foto:', error);
-          photoUrl = simulateImageUpload(photo.buffer, fileName);
+      if (photoError) {
+        console.error('❌ Error de Storage:', {
+          message: photoError.message,
+          hint: photoError.hint,
+          details: photoError.details,
+          statusCode: photoError.statusCode
+        });
+        
+        // Si el error es de autenticación, intentar con un approach diferente
+        if (photoError.statusCode === 400 || photoError.statusCode === 403) {
+          console.log('🔄 Intentando método alternativo...');
+          throw new Error('Auth error - falling back');
         }
-      } else {
-        photoUrl = simulateImageUpload(photo.buffer, fileName);
+        
+        throw photoError;
       }
+
+      console.log('✅ Foto subida:', photoData);
+
+      // Obtener URL pública
+      const { data: { publicUrl } } = supabase.storage
+        .from('field-inspector')
+        .getPublicUrl(`photos/${fileName}`);
+      
+      photoUrl = publicUrl;
+      console.log('✅ URL pública:', photoUrl);
+      
+    } catch (error) {
+      console.error('❌ Error subiendo foto:', error);
+      photoUrl = simulateImageUpload(photo.buffer, fileName);
     }
+  } else {
+    photoUrl = simulateImageUpload(photo.buffer, fileName);
+  }
+}
 
     // Procesar audio con OpenAI Whisper
     if (req.files?.audio) {
