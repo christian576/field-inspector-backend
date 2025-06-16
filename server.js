@@ -635,7 +635,8 @@ app.get('/test', (req, res) => {
 });
 
 // Manejo de errores
-// Endpoint de prueba para Storage - agregar antes del 404 handler
+// Reemplaza todo el endpoint /test-storage con este código actualizado:
+
 app.get('/test-storage', async (req, res) => {
   try {
     console.log('🧪 Iniciando test de Storage...');
@@ -646,63 +647,165 @@ app.get('/test-storage', async (req, res) => {
         hasSupabase,
         env: {
           hasUrl: !!process.env.SUPABASE_URL,
-          hasAnon: !!process.env.SUPABASE_ANON_KEY
+          hasAnon: !!process.env.SUPABASE_ANON_KEY,
+          hasService: !!process.env.SUPABASE_SERVICE_KEY
         }
       });
     }
 
-    // 1. Listar buckets
+    // 1. Listar buckets con manejo de errores mejorado
     console.log('📦 Listando buckets...');
-    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    let buckets = [];
+    let bucketsError = null;
     
-    // 2. Información del bucket específico
-    let bucketInfo = null;
-    if (buckets && buckets.find(b => b.name === 'field-inspector')) {
-      console.log('🪣 Bucket field-inspector encontrado');
-      
-      // Intentar listar archivos en el bucket
-      const { data: files, error: filesError } = await supabase.storage
-        .from('field-inspector')
-        .list('photos', {
-          limit: 5,
-          offset: 0
-        });
-      
-      bucketInfo = {
-        exists: true,
-        files: files?.length || 0,
-        filesError: filesError?.message
-      };
+    try {
+      const bucketsResponse = await supabase.storage.listBuckets();
+      buckets = bucketsResponse.data || [];
+      bucketsError = bucketsResponse.error;
+      console.log('Buckets response:', { count: buckets.length, error: bucketsError });
+    } catch (err) {
+      console.error('Error listando buckets:', err);
+      bucketsError = err.message;
     }
 
-    // 3. Test de subida
-    console.log('📤 Probando subida...');
-    const testContent = Buffer.from('Test image content at ' + new Date().toISOString());
-    const testFileName = `test_${Date.now()}.txt`;
+    // 2. Información del bucket específico
+    let bucketInfo = null;
+    let filesInBucket = [];
     
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('field-inspector')
-      .upload(`photos/${testFileName}`, testContent, {
-        contentType: 'text/plain',
-        upsert: true
-      });
-
-    // 4. Obtener URL si se subió
-    let publicUrl = null;
-    if (uploadData && !uploadError) {
-      const { data: urlData } = supabase.storage
-        .from('field-inspector')
-        .getPublicUrl(`photos/${testFileName}`);
-      publicUrl = urlData.publicUrl;
+    if (buckets.length > 0) {
+      console.log('🪣 Buckets encontrados:', buckets.map(b => b.name));
       
-      // Intentar eliminar el archivo de prueba
-      await supabase.storage
+      // Buscar nuestro bucket
+      const fieldInspectorBucket = buckets.find(b => b.name === 'field-inspector');
+      if (fieldInspectorBucket) {
+        console.log('✅ Bucket field-inspector encontrado');
+        
+        try {
+          // Listar archivos
+          const { data: files, error: filesError } = await supabase.storage
+            .from('field-inspector')
+            .list('photos', {
+              limit: 10,
+              offset: 0
+            });
+          
+          filesInBucket = files || [];
+          bucketInfo = {
+            exists: true,
+            bucket: fieldInspectorBucket,
+            filesCount: filesInBucket.length,
+            filesError: filesError?.message
+          };
+        } catch (err) {
+          console.error('Error listando archivos:', err);
+        }
+      }
+    }
+
+    // 3. Test de subida con imagen PNG mínima válida
+    console.log('📤 Probando subida de imagen PNG...');
+    
+    // Crear imagen PNG 1x1 transparente válida
+    const pngBuffer = Buffer.from([
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+      0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+      0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+      0x54, 0x78, 0x9C, 0x62, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D,
+      0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+      0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+    ]);
+    
+    const testFileName = `test_${Date.now()}.png`;
+    let uploadData = null;
+    let uploadError = null;
+    let publicUrl = null;
+
+    try {
+      const uploadResponse = await supabase.storage
         .from('field-inspector')
-        .remove([`photos/${testFileName}`]);
+        .upload(`photos/${testFileName}`, pngBuffer, {
+          contentType: 'image/png',
+          cacheControl: '3600',
+          upsert: true
+        });
+      
+      uploadData = uploadResponse.data;
+      uploadError = uploadResponse.error;
+      
+      if (uploadData && !uploadError) {
+        const { data: urlData } = supabase.storage
+          .from('field-inspector')
+          .getPublicUrl(`photos/${testFileName}`);
+        publicUrl = urlData.publicUrl;
+        
+        // Limpiar - eliminar archivo de prueba
+        await supabase.storage
+          .from('field-inspector')
+          .remove([`photos/${testFileName}`]);
+        
+        console.log('✅ Test de subida exitoso, archivo eliminado');
+      }
+    } catch (err) {
+      console.error('Error en upload test:', err);
+      uploadError = err;
+    }
+
+    // 4. Test alternativo con JPEG si PNG falla
+    let jpegTest = null;
+    if (uploadError && uploadError.message?.includes('mime type')) {
+      console.log('🔄 Intentando con JPEG...');
+      
+      // JPEG mínimo válido
+      const jpegBuffer = Buffer.from([
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
+        0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+        0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+        0x00, 0x03, 0x02, 0x02, 0x03, 0x02, 0x02, 0x03,
+        0x03, 0x03, 0x03, 0x04, 0x03, 0x03, 0x04, 0x05,
+        0x08, 0x05, 0x05, 0x04, 0x04, 0x05, 0x0A, 0x07,
+        0x07, 0x06, 0x08, 0x0C, 0x0A, 0x0C, 0x0C, 0x0B,
+        0x0A, 0x0B, 0x0B, 0x0D, 0x0E, 0x12, 0x10, 0x0D,
+        0x0E, 0x11, 0x0E, 0x0B, 0x0B, 0x10, 0x16, 0x10,
+        0x11, 0x13, 0x14, 0x15, 0x15, 0x15, 0x0C, 0x0F,
+        0x17, 0x18, 0x16, 0x14, 0x18, 0x12, 0x14, 0x15,
+        0x14, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+        0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4,
+        0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x0A, 0xFF, 0xC4, 0x00, 0x14,
+        0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01,
+        0x00, 0x00, 0x3F, 0x00, 0x7F, 0x01, 0xFF, 0xD9
+      ]);
+      
+      try {
+        const jpegFileName = `test_${Date.now()}.jpg`;
+        const jpegResponse = await supabase.storage
+          .from('field-inspector')
+          .upload(`photos/${jpegFileName}`, jpegBuffer, {
+            contentType: 'image/jpeg',
+            upsert: true
+          });
+        
+        if (jpegResponse.data && !jpegResponse.error) {
+          await supabase.storage
+            .from('field-inspector')
+            .remove([`photos/${jpegFileName}`]);
+          jpegTest = { success: true };
+        } else {
+          jpegTest = { success: false, error: jpegResponse.error };
+        }
+      } catch (err) {
+        jpegTest = { success: false, error: err.message };
+      }
     }
 
     const response = {
-      success: !uploadError,
+      success: !uploadError || jpegTest?.success,
       timestamp: new Date().toISOString(),
       config: {
         hasSupabase,
@@ -711,74 +814,43 @@ app.get('/test-storage', async (req, res) => {
         hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY
       },
       storage: {
-        buckets: buckets?.map(b => ({ name: b.name, public: b.public })),
-        bucketsError: bucketsError?.message,
+        buckets: buckets.map(b => ({ 
+          name: b.name, 
+          public: b.public,
+          id: b.id 
+        })),
+        bucketsCount: buckets.length,
+        bucketsError,
         bucketInfo,
+        filesInBucket: filesInBucket.map(f => ({
+          name: f.name,
+          size: f.metadata?.size
+        })),
         testUpload: {
           success: !uploadError,
-          error: uploadError?.message,
+          error: uploadError?.message || uploadError?.toString(),
           statusCode: uploadError?.statusCode,
-          hint: uploadError?.hint,
           data: uploadData,
           publicUrl
-        }
+        },
+        jpegTest
+      },
+      debug: {
+        supabaseClient: !!supabase,
+        storageClient: !!supabase?.storage
       }
     };
 
-    console.log('📊 Resultado del test:', JSON.stringify(response, null, 2));
+    console.log('📊 Test completado');
     res.json(response);
 
   } catch (error) {
-    console.error('❌ Error en test:', error);
+    console.error('❌ Error general en test:', error);
     res.status(500).json({ 
       error: error.message,
       stack: error.stack,
       type: error.constructor.name
     });
-  }
-});
-
-// Endpoint adicional para probar subida con autenticación
-app.post('/test-upload', authenticateUser, upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file provided' });
-    }
-
-    console.log('📤 Test upload con auth:', {
-      userId: req.user.id,
-      fileName: req.file.originalname,
-      size: req.file.size
-    });
-
-    const fileName = `test_${req.user.id}_${Date.now()}_${req.file.originalname}`;
-    
-    const { data, error } = await supabase.storage
-      .from('field-inspector')
-      .upload(`photos/${fileName}`, req.file.buffer, {
-        contentType: req.file.mimetype,
-        upsert: false
-      });
-
-    if (error) {
-      console.error('❌ Error:', error);
-      return res.status(400).json({ error: error.message, details: error });
-    }
-
-    const { data: { publicUrl } } = supabase.storage
-      .from('field-inspector')
-      .getPublicUrl(`photos/${fileName}`);
-
-    res.json({
-      success: true,
-      fileName,
-      publicUrl,
-      data
-    });
-
-  } catch (error) {
-    console.error('❌ Error:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 
