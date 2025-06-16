@@ -5,18 +5,20 @@ const multer = require('multer');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Reemplaza las líneas 8-24 de tu server.js con esto:
+// Reemplaza COMPLETAMENTE las líneas 8-50 de tu server.js con esto:
 
 // Intentar conectar a Supabase solo si las variables están disponibles
 let supabase = null;
 let hasSupabase = false;
 
 try {
-  // Priorizar Service Key sobre Anon Key
+  // IMPORTANTE: Usar SUPABASE_SERVICE_KEY, no SUPABASE_SERVICE_ROLE_KEY
   if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
     const { createClient } = require('@supabase/supabase-js');
     
-    // Usar service key para todas las operaciones del servidor
+    console.log('🔑 Inicializando Supabase con Service Key...');
+    
+    // Crear cliente con Service Key
     supabase = createClient(
       process.env.SUPABASE_URL, 
       process.env.SUPABASE_SERVICE_KEY,
@@ -25,6 +27,11 @@ try {
           autoRefreshToken: false,
           persistSession: false,
           detectSessionInUrl: false
+        },
+        global: {
+          headers: {
+            'x-supabase-service-role': process.env.SUPABASE_SERVICE_KEY
+          }
         }
       }
     );
@@ -32,29 +39,37 @@ try {
     hasSupabase = true;
     console.log('✅ Supabase configurado con Service Role Key');
     
-    // Test rápido de conexión
+    // Verificar que realmente funcione
     supabase.storage.listBuckets()
       .then(({ data, error }) => {
         if (error) {
-          console.error('❌ Error conectando Storage:', error);
+          console.error('❌ Error verificando Storage:', error);
         } else {
-          console.log('✅ Storage conectado. Buckets:', data?.map(b => b.name) || []);
+          console.log('✅ Storage verificado. Buckets:', data?.map(b => b.name) || []);
         }
-      })
-      .catch(err => console.error('❌ Error en test de Storage:', err));
+      });
     
   } else if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+    // Fallback a anon key si no hay service key
     const { createClient } = require('@supabase/supabase-js');
+    
+    console.log('⚠️ Service Key no encontrada, usando Anon Key (limitado)');
+    
     supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
     hasSupabase = true;
-    console.log('✅ Supabase configurado con Anon Key (limitado)');
+    console.log('✅ Supabase configurado con Anon Key');
   } else {
-    console.log('⚠️ Variables de Supabase no encontradas, usando modo fallback');
+    console.log('⚠️ Variables de Supabase no encontradas');
+    console.log('Variables disponibles:', {
+      hasUrl: !!process.env.SUPABASE_URL,
+      hasAnon: !!process.env.SUPABASE_ANON_KEY,
+      hasService: !!process.env.SUPABASE_SERVICE_KEY
+    });
   }
 } catch (error) {
   console.log('⚠️ Error al conectar Supabase:', error.message);
+  hasSupabase = false;
 }
-
 // Configuración de Multer para archivos
 const storage = multer.memoryStorage();
 const upload = multer({ 
