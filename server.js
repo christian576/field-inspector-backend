@@ -602,6 +602,153 @@ app.get('/test', (req, res) => {
 });
 
 // Manejo de errores
+// Endpoint de prueba para Storage - agregar antes del 404 handler
+app.get('/test-storage', async (req, res) => {
+  try {
+    console.log('🧪 Iniciando test de Storage...');
+    
+    if (!hasSupabase) {
+      return res.json({ 
+        error: 'Supabase no configurado',
+        hasSupabase,
+        env: {
+          hasUrl: !!process.env.SUPABASE_URL,
+          hasAnon: !!process.env.SUPABASE_ANON_KEY
+        }
+      });
+    }
+
+    // 1. Listar buckets
+    console.log('📦 Listando buckets...');
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    // 2. Información del bucket específico
+    let bucketInfo = null;
+    if (buckets && buckets.find(b => b.name === 'field-inspector')) {
+      console.log('🪣 Bucket field-inspector encontrado');
+      
+      // Intentar listar archivos en el bucket
+      const { data: files, error: filesError } = await supabase.storage
+        .from('field-inspector')
+        .list('photos', {
+          limit: 5,
+          offset: 0
+        });
+      
+      bucketInfo = {
+        exists: true,
+        files: files?.length || 0,
+        filesError: filesError?.message
+      };
+    }
+
+    // 3. Test de subida
+    console.log('📤 Probando subida...');
+    const testContent = Buffer.from('Test image content at ' + new Date().toISOString());
+    const testFileName = `test_${Date.now()}.txt`;
+    
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('field-inspector')
+      .upload(`photos/${testFileName}`, testContent, {
+        contentType: 'text/plain',
+        upsert: true
+      });
+
+    // 4. Obtener URL si se subió
+    let publicUrl = null;
+    if (uploadData && !uploadError) {
+      const { data: urlData } = supabase.storage
+        .from('field-inspector')
+        .getPublicUrl(`photos/${testFileName}`);
+      publicUrl = urlData.publicUrl;
+      
+      // Intentar eliminar el archivo de prueba
+      await supabase.storage
+        .from('field-inspector')
+        .remove([`photos/${testFileName}`]);
+    }
+
+    const response = {
+      success: !uploadError,
+      timestamp: new Date().toISOString(),
+      config: {
+        hasSupabase,
+        supabaseUrl: process.env.SUPABASE_URL,
+        hasAnonKey: !!process.env.SUPABASE_ANON_KEY,
+        hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY
+      },
+      storage: {
+        buckets: buckets?.map(b => ({ name: b.name, public: b.public })),
+        bucketsError: bucketsError?.message,
+        bucketInfo,
+        testUpload: {
+          success: !uploadError,
+          error: uploadError?.message,
+          statusCode: uploadError?.statusCode,
+          hint: uploadError?.hint,
+          data: uploadData,
+          publicUrl
+        }
+      }
+    };
+
+    console.log('📊 Resultado del test:', JSON.stringify(response, null, 2));
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Error en test:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack,
+      type: error.constructor.name
+    });
+  }
+});
+
+// Endpoint adicional para probar subida con autenticación
+app.post('/test-upload', authenticateUser, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
+    console.log('📤 Test upload con auth:', {
+      userId: req.user.id,
+      fileName: req.file.originalname,
+      size: req.file.size
+    });
+
+    const fileName = `test_${req.user.id}_${Date.now()}_${req.file.originalname}`;
+    
+    const { data, error } = await supabase.storage
+      .from('field-inspector')
+      .upload(`photos/${fileName}`, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
+
+    if (error) {
+      console.error('❌ Error:', error);
+      return res.status(400).json({ error: error.message, details: error });
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('field-inspector')
+      .getPublicUrl(`photos/${fileName}`);
+
+    res.json({
+      success: true,
+      fileName,
+      publicUrl,
+      data
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({
     error: 'Ruta no encontrada',
