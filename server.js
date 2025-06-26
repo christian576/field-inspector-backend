@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const axios = require('axios'); // AGREGADO: para Trello
+//const axios = require('axios'); // AGREGADO: para Trello
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -73,17 +73,17 @@ try {
 }
 
 // AGREGADO: Configuración de Trello
-const TRELLO_API_KEY = process.env.TRELLO_API_KEY;
-const TRELLO_TOKEN = process.env.TRELLO_TOKEN;
-const TRELLO_BOARD_ID = process.env.TRELLO_BOARD_ID;
-const TRELLO_LIST_ID = process.env.TRELLO_LIST_ID;
-const hasTrello = !!(TRELLO_API_KEY && TRELLO_TOKEN && TRELLO_LIST_ID);
+//const TRELLO_API_KEY = process.env.TRELLO_API_KEY;
+//const TRELLO_TOKEN = process.env.TRELLO_TOKEN;
+//const TRELLO_BOARD_ID = process.env.TRELLO_BOARD_ID;
+//const TRELLO_LIST_ID = process.env.TRELLO_LIST_ID;
+//const hasTrello = !!(TRELLO_API_KEY && TRELLO_TOKEN && TRELLO_LIST_ID);
 
-if (hasTrello) {
-  console.log('✅ Trello configurado correctamente');
-} else {
-  console.log('⚠️ Trello no configurado (opcional)');
-}
+//if (hasTrello) {
+  //console.log('✅ Trello configurado correctamente');
+//} else {
+  //console.log('⚠️ Trello no configurado (opcional)');
+//}
 
 // Configuración de Multer para archivos
 const storage = multer.memoryStorage();
