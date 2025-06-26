@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const axios = require('axios'); // AGREGADO: para Trello
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -70,6 +71,20 @@ try {
   console.log('⚠️ Error al conectar Supabase:', error.message);
   hasSupabase = false;
 }
+
+// AGREGADO: Configuración de Trello
+const TRELLO_API_KEY = process.env.TRELLO_API_KEY;
+const TRELLO_TOKEN = process.env.TRELLO_TOKEN;
+const TRELLO_BOARD_ID = process.env.TRELLO_BOARD_ID;
+const TRELLO_LIST_ID = process.env.TRELLO_LIST_ID;
+const hasTrello = !!(TRELLO_API_KEY && TRELLO_TOKEN && TRELLO_LIST_ID);
+
+if (hasTrello) {
+  console.log('✅ Trello configurado correctamente');
+} else {
+  console.log('⚠️ Trello no configurado (opcional)');
+}
+
 // Configuración de Multer para archivos
 const storage = multer.memoryStorage();
 const upload = multer({ 
@@ -120,6 +135,134 @@ function simulateImageUpload(imageBuffer, fileName) {
   const fakeUrl = `https://storage.supabase.co/field-inspector/photos/simulated/${fileName}`;
   console.log('📸 Simulando subida de imagen:', fileName);
   return fakeUrl;
+}
+
+// AGREGADO: Función helper para crear tarjeta en Trello
+async function createTrelloCard(record) {
+  if (!hasTrello) {
+    return null;
+  }
+
+  try {
+    const cardData = {
+      name: `🔧 Inspección - ${record.location || 'Sin ubicación'} - ${new Date().toLocaleDateString('es-AR')}`,
+      desc: `**📍 Ubicación:** ${record.location || 'No especificada'}\n\n` +
+            `**📝 Notas:** ${record.notes || 'Sin notas'}\n\n` +
+            `**🎯 Transcripción:** ${record.transcription || 'Sin transcripción'}\n\n` +
+            `**📅 Fecha:** ${new Date().toLocaleString('es-AR')}\n\n` +
+            `**👤 Usuario:** ${record.user_email || record.user_id}`,
+      idList: TRELLO_LIST_ID,
+      pos: 'top'
+    };
+
+    const response = await axios.post(
+      `https://api.trello.com/1/cards`,
+      {
+        ...cardData,
+        key: TRELLO_API_KEY,
+        token: TRELLO_TOKEN
+      }
+    );
+
+    const card = response.data;
+    console.log('✅ Tarjeta creada en Trello:', card.id, card.shortUrl);
+
+    // Si hay foto, adjuntarla a la tarjeta
+    if (record.photo_url) {
+      try {
+        await axios.post(
+          `https://api.trello.com/1/cards/${card.id}/attachments`,
+          {
+            url: record.photo_url,
+            name: 'Foto de inspección',
+            key: TRELLO_API_KEY,
+            token: TRELLO_TOKEN
+          }
+        );
+        console.log('📸 Foto adjuntada a tarjeta Trello');
+      } catch (error) {
+        console.error('Error adjuntando foto a Trello:', error.message);
+      }
+    }
+
+    return card;
+  } catch (error) {
+    console.error('❌ Error creando tarjeta en Trello:', error.message);
+    return null;
+  }
+}
+
+// AGREGADO: Función helper mejorada para subir fotos
+async function uploadPhotoToSupabase(photo, userId) {
+  if (!hasSupabase || !supabase) {
+    return null;
+  }
+
+  const timestamp = Date.now();
+  const safeFileName = photo.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+  // IMPORTANTE: Usar estructura plana sin subcarpetas de usuario
+  const fileName = `${timestamp}_${userId}_${safeFileName}`;
+  const storagePath = `photos/${fileName}`;
+
+  console.log('📸 Subiendo foto a Supabase:', {
+    fileName,
+    storagePath,
+    size: photo.buffer.length,
+    mimetype: photo.mimetype
+  });
+
+  try {
+    // Intentar subir con Service Key si está disponible
+    const { data, error } = await supabase.storage
+      .from('field-inspector')
+      .upload(storagePath, photo.buffer, {
+        contentType: photo.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (error) {
+      console.error('❌ Error de Storage:', error);
+      
+      // Si el archivo ya existe, intentar con nombre único
+      if (error.statusCode === 409) {
+        const uniqueFileName = `${timestamp}_${Math.random().toString(36).substring(7)}_${safeFileName}`;
+        const uniquePath = `photos/${uniqueFileName}`;
+        
+        const { data: retryData, error: retryError } = await supabase.storage
+          .from('field-inspector')
+          .upload(uniquePath, photo.buffer, {
+            contentType: photo.mimetype,
+            cacheControl: '3600',
+            upsert: true
+          });
+        
+        if (!retryError) {
+          const { data: { publicUrl } } = supabase.storage
+            .from('field-inspector')
+            .getPublicUrl(uniquePath);
+          
+          console.log('✅ Foto subida con nombre único:', publicUrl);
+          return publicUrl;
+        } else {
+          throw retryError;
+        }
+      } else {
+        throw error;
+      }
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('field-inspector')
+      .getPublicUrl(storagePath);
+    
+    console.log('✅ Foto subida exitosamente:', publicUrl);
+    return publicUrl;
+
+  } catch (error) {
+    console.error('❌ Error subiendo foto:', error);
+    return null;
+  }
 }
 
 // ============= RUTAS DE AUTENTICACIÓN =============
@@ -317,34 +460,14 @@ app.post('/api/records', authenticateUser, upload.fields([
     let photoUrl = null;
     let transcription = null;
 
-    // Procesar foto
+    // MODIFICADO: Procesar foto con nueva función
     if (req.files?.photo) {
       const photo = req.files.photo[0];
-      const fileName = `${userId}_${Date.now()}_${photo.originalname}`;
+      photoUrl = await uploadPhotoToSupabase(photo, userId);
       
-      if (hasSupabase) {
-        try {
-          const { data: photoData, error: photoError } = await supabase.storage
-            .from('field-inspector')
-            .upload(`photos/${userId}/${fileName}`, photo.buffer, {
-              contentType: photo.mimetype,
-              upsert: false
-            });
-
-          if (photoError) throw photoError;
-
-          const { data: { publicUrl } } = supabase.storage
-            .from('field-inspector')
-            .getPublicUrl(`photos/${userId}/${fileName}`);
-          
-          photoUrl = publicUrl;
-          console.log('✅ Foto subida a Supabase:', photoUrl);
-        } catch (error) {
-          console.error('Error subiendo foto:', error);
-          photoUrl = simulateImageUpload(photo.buffer, fileName);
-        }
-      } else {
-        photoUrl = simulateImageUpload(photo.buffer, fileName);
+      if (!photoUrl) {
+        // Fallback si falla la subida
+        photoUrl = simulateImageUpload(photo.buffer, photo.originalname);
       }
     }
 
@@ -426,6 +549,15 @@ app.post('/api/records', authenticateUser, upload.fields([
         if (error) throw error;
         savedRecord = data[0];
         console.log('✅ Registro guardado en Supabase:', savedRecord.id);
+        
+        // AGREGADO: Crear tarjeta en Trello si está configurado
+        if (hasTrello && savedRecord) {
+          savedRecord.user_email = req.user.email;
+          createTrelloCard(savedRecord).catch(error => {
+            console.error('Error creando tarjeta en Trello:', error);
+          });
+        }
+        
       } catch (error) {
         console.error('Error guardando en Supabase:', error);
         // Fallback a memoria
@@ -449,7 +581,8 @@ app.post('/api/records', authenticateUser, upload.fields([
       features: {
         real_transcription: !!process.env.OPENAI_API_KEY,
         supabase_storage: hasSupabase,
-        photo_uploaded: !!photoUrl
+        photo_uploaded: !!photoUrl,
+        trello_configured: hasTrello // AGREGADO
       }
     });
 
@@ -587,6 +720,39 @@ app.post('/api/transcribe', authenticateUser, upload.single('audio'), async (req
   }
 });
 
+// AGREGADO: Endpoint para verificar configuración de Trello
+app.get('/api/trello/status', authenticateUser, async (req, res) => {
+  if (!hasTrello) {
+    return res.json({ 
+      success: false, 
+      configured: false,
+      message: 'Trello no está configurado' 
+    });
+  }
+
+  try {
+    // Verificar que las credenciales funcionan
+    const response = await axios.get(
+      `https://api.trello.com/1/members/me?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}`
+    );
+
+    res.json({
+      success: true,
+      configured: true,
+      username: response.data.username,
+      fullName: response.data.fullName,
+      boardId: TRELLO_BOARD_ID,
+      listId: TRELLO_LIST_ID
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      configured: true,
+      error: 'Error verificando credenciales de Trello'
+    });
+  }
+});
+
 // ============= RUTAS BÁSICAS =============
 
 app.get('/health', (req, res) => {
@@ -607,7 +773,8 @@ app.get('/health', (req, res) => {
       supabase_configured: hasSupabase,
       file_upload: true,
       transcription: true,
-      photo_storage: hasSupabase
+      photo_storage: hasSupabase,
+      trello_integration: hasTrello // AGREGADO
     }
   });
 });
@@ -619,7 +786,8 @@ app.get('/', (req, res) => {
     features: {
       real_transcription: !!process.env.OPENAI_API_KEY,
       database: hasSupabase ? 'Supabase' : 'Memory',
-      storage: hasSupabase ? 'Supabase Storage' : 'Simulated'
+      storage: hasSupabase ? 'Supabase Storage' : 'Simulated',
+      trello: hasTrello ? 'Configured' : 'Not configured' // AGREGADO
     },
     endpoints: {
       health: 'GET /health',
@@ -631,7 +799,8 @@ app.get('/', (req, res) => {
         create: 'POST /api/records',
         list: 'GET /api/records'
       },
-      transcription: 'POST /api/transcribe'
+      transcription: 'POST /api/transcribe',
+      trello: 'GET /api/trello/status' // AGREGADO
     }
   });
 });
@@ -643,6 +812,7 @@ app.get('/test', (req, res) => {
     configuration: {
       supabase: hasSupabase,
       openai: !!process.env.OPENAI_API_KEY,
+      trello: hasTrello, // AGREGADO
       port: PORT,
       env: process.env.NODE_ENV || 'development'
     }
@@ -878,7 +1048,8 @@ app.use((req, res) => {
       auth: ['POST /api/auth/register', 'POST /api/auth/login'],
       records: ['POST /api/records', 'GET /api/records'],
       transcription: ['POST /api/transcribe'],
-      utils: ['GET /', 'GET /health', 'GET /test']
+      trello: ['GET /api/trello/status'], // AGREGADO
+      utils: ['GET /', 'GET /health', 'GET /test', 'GET /test-storage']
     }
   });
 });
@@ -897,6 +1068,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
   console.log(`🔐 Supabase: ${hasSupabase ? '✅ Conectado' : '❌ Modo fallback'}`);
   console.log(`🤖 OpenAI: ${process.env.OPENAI_API_KEY ? '✅ Configurado' : '❌ Modo simulado'}`);
+  console.log(`📋 Trello: ${hasTrello ? '✅ Configurado' : '❌ No configurado'}`); // AGREGADO
   console.log(`📝 Endpoints disponibles en http://localhost:${PORT}/`);
 });
 
